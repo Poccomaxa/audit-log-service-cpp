@@ -10,6 +10,7 @@ struct Query {
     std::optional<domain::Instant> to;
     std::optional<domain::Action> action;
     std::optional<domain::Outcome> outcome;
+    std::optional<std::int64_t> snapshot_id;
     std::optional<std::int32_t> page;
     std::optional<std::int32_t> size;
 };

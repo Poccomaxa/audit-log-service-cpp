@@ -300,6 +300,72 @@ class PaginationWindowTests(ApiTest):
         self.assertEqual(after["totalElements"], second["totalElements"])
 
 
+class SnapshotTests(ApiTest):
+    def test_bounded_pages_remain_stable_after_append(self):
+        initial = self.query(size=200)
+        initial_ids = [event["id"] for event in initial["content"]]
+        snapshot = max(initial_ids)
+        first = self.query(page=0, size=3, snapshotId=snapshot)
+        status, _, created = self.service.request("POST", body={
+            "actor": "snapshot-test@example.test", "action": "LOGIN", "outcome": "ALLOWED"
+        })
+        self.assertEqual(status, 201, created)
+        self.assertGreater(created["id"], snapshot)
+
+        pages = [first] + [self.query(page=page, size=3, snapshotId=snapshot)
+                           for page in range(1, (len(initial_ids) + 2) // 3)]
+        self.assertTrue(all(page["totalElements"] == initial["totalElements"] for page in pages))
+        self.assertEqual([event["id"] for page in pages for event in page["content"]], initial_ids)
+        self.assertEqual(self.query(page=99, size=3, snapshotId=snapshot)["totalElements"], len(initial_ids))
+        self.assertIn(created["id"], [event["id"] for event in self.query(size=200)["content"]])
+
+        older_snapshot = sorted(initial_ids)[-2]
+        older = self.query(size=200, snapshotId=older_snapshot)
+        self.assertEqual([event["id"] for event in older["content"]],
+                         [event_id for event_id in initial_ids if event_id <= older_snapshot])
+        self.assertEqual(older["totalElements"], len(older["content"]))
+
+    def test_snapshot_combines_with_existing_filters(self):
+        params = {"actor": "bob@example.com", "action": "EXPORT_DATA", "outcome": "DENIED",
+                  "from": "2026-04-20T09:20:00Z", "to": "2026-04-20T09:40:00Z"}
+        self.assert_ids([7], snapshotId=7, **params)
+        self.assert_ids([], snapshotId=6, **params)
+        self.assert_ids([8, 4, 1], actor="alice@example.com", snapshotId=8)
+        self.assertEqual(self.query(actor="  ", snapshotId=8), self.query(snapshotId=8))
+        self.assertEqual(self.query(page=1, size=1, actor="alice@example.com", snapshotId=8)["totalElements"], 3)
+
+    def test_equal_recording_times_sort_by_id_descending(self):
+        actor = "snapshot-ties@example.test"
+        result = self.service.sql(
+            "insert into audit_events (recorded_at, actor, action, outcome) values "
+            f"('2026-01-01 00:00:00+00', '{actor}', 'LOGIN', 'ALLOWED'), "
+            f"('2026-01-01 00:00:00+00', '{actor}', 'LOGIN', 'ALLOWED'), "
+            f"('2026-01-01 00:00:00+00', '{actor}', 'LOGIN', 'ALLOWED') returning id"
+        )
+        ids = [int(line) for line in result.stdout.splitlines() if line.isdigit()]
+        self.assertEqual(len(ids), 3)
+        expected = sorted(ids, reverse=True)
+        for snapshot in (None, max(ids)):
+            params = {"actor": actor}
+            if snapshot is not None:
+                params["snapshotId"] = snapshot
+            self.assert_ids(expected, **params)
+            first = self.query(page=0, size=2, **params)
+            second = self.query(page=1, size=2, **params)
+            self.assertEqual([event["id"] for page in (first, second) for event in page["content"]], expected)
+            self.assertEqual(first["totalElements"], second["totalElements"])
+
+    def test_snapshot_integer_validation_and_limits(self):
+        for value in ("abc", "1.5", "9223372036854775808", "-9223372036854775809"):
+            with self.subTest(value=value):
+                status, _, error = self.service.request(params={"snapshotId": value})
+                self.assertEqual(status, 400, error)
+                self.assertIn("snapshotId", error["message"])
+        self.assertEqual(self.query(snapshotId="9223372036854775807"), self.query())
+        self.assert_ids([], snapshotId="-9223372036854775808")
+        self.assertEqual(self.query(snapshotId=" "), self.query())
+
+
 class AppendTests(ApiTest):
     @staticmethod
     def event(**values):
@@ -432,7 +498,7 @@ def main():
     with database() as service, running_service(service, binary):
         ApiTest.service = service
         suite = unittest.TestSuite()
-        for case in (QueryTests, PaginationWindowTests, AppendTests, DatabaseTimestampTests):
+        for case in (QueryTests, PaginationWindowTests, SnapshotTests, AppendTests, DatabaseTimestampTests):
             suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
 

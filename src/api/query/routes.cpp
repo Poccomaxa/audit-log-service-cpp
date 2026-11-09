@@ -35,6 +35,7 @@ void register_routes(httplib::Server& server, application::query::QueryService& 
     query.to = parameter<domain::Instant>(request, "to", parameter_instant);
     query.action = parameter<domain::Action>(request, "action", parameter_action);
     query.outcome = parameter<domain::Outcome>(request, "outcome", parameter_outcome);
+    query.snapshot_id = parameter<std::int64_t>(request, "snapshotId", parameter_integer<std::int64_t>);
     query.page = parameter<std::int32_t>(request, "page", parameter_integer<std::int32_t>);
     query.size = parameter<std::int32_t>(request, "size", parameter_integer<std::int32_t>);
     const auto page = service.find(query);
