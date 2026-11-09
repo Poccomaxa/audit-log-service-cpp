@@ -260,6 +260,46 @@ class QueryTests(ApiTest):
                 self.assertEqual(self.service.request(params=params)[0], 400)
 
 
+class PaginationWindowTests(ApiTest):
+    def test_adjacent_pages_without_append_are_sequential(self):
+        initial = self.query(page=0, size=200)
+        first = self.query(page=0, size=3)
+        second = self.query(page=1, size=3)
+        initial_ids = [event["id"] for event in initial["content"]]
+        first_ids = [event["id"] for event in first["content"]]
+        second_ids = [event["id"] for event in second["content"]]
+
+        self.assertGreaterEqual(len(initial_ids), 6)
+        self.assertEqual(first["totalElements"], initial["totalElements"])
+        self.assertEqual(second["totalElements"], first["totalElements"])
+        self.assertEqual(first_ids + second_ids, initial_ids[:6])
+        self.assertTrue(set(first_ids).isdisjoint(second_ids))
+
+    def test_append_between_pages_shifts_window(self):
+        initial = self.query(page=0, size=200)
+        first = self.query(page=0, size=3)
+        initial_ids = [event["id"] for event in initial["content"]]
+        first_ids = [event["id"] for event in first["content"]]
+        self.assertGreaterEqual(len(initial_ids), 6)
+        self.assertEqual(first_ids, initial_ids[:3])
+        self.assertEqual(first["totalElements"], initial["totalElements"])
+
+        status, _, created = self.service.request("POST", body={
+            "actor": "pagination-window@example.test", "action": "LOGIN", "outcome": "ALLOWED"
+        })
+        self.assertEqual(status, 201, created)
+        second = self.query(page=1, size=3)
+        second_ids = [event["id"] for event in second["content"]]
+        self.assertEqual(second["totalElements"], first["totalElements"] + 1)
+        self.assertEqual(second_ids, initial_ids[2:5])
+        self.assertEqual(set(first_ids) & set(second_ids), {first_ids[-1]})
+
+        after = self.query(page=0, size=200)
+        after_ids = [event["id"] for event in after["content"]]
+        self.assertEqual(after_ids, [created["id"]] + initial_ids)
+        self.assertEqual(after["totalElements"], second["totalElements"])
+
+
 class AppendTests(ApiTest):
     @staticmethod
     def event(**values):
@@ -392,7 +432,7 @@ def main():
     with database() as service, running_service(service, binary):
         ApiTest.service = service
         suite = unittest.TestSuite()
-        for case in (QueryTests, AppendTests, DatabaseTimestampTests):
+        for case in (QueryTests, PaginationWindowTests, AppendTests, DatabaseTimestampTests):
             suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
 
