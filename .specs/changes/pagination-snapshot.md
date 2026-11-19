@@ -4,7 +4,7 @@
 
 A GET without `snapshotId` currently reads an unbounded result set and returns no boundary. It will resolve an upper boundary S once, apply `id <= S` to its own content and `totalElements`, and return S as `snapshotId`.
 
-This addresses the moving OFFSET window described in [Pagination window shift — handover](../investigations/pagination-window-shift.md), including its session-3 handover. The decisions below come from [Session 3 — The next contract](../../.training/session-3/README.md#the-next-contract). The owner approved the contract and plan; implementation has not been authorized.
+This addresses the moving OFFSET window described in [Pagination window shift — handover](../investigations/pagination-window-shift.md), including its session-3 handover. The decisions below come from [Session 3 — The next contract](../../.training/session-3/README.md#the-next-contract). The owner approved the contract and plan, then authorized implementation.
 
 ## Behavior we preserve
 
@@ -54,15 +54,32 @@ tests/run-postgres.sh build/audit-log-service
 git diff --check
 ```
 
-Current evidence is source inspection only; no build, unit or PostgreSQL integration checks have been run for this task. Existing pagination checks cover the earlier explicit-input boundary, not automatic boundary resolution and response reporting.
+Before implementation, the combined scenario failed because the first response omitted `snapshotId`. After implementation, the same scenario and the additional boundary checks passed against PostgreSQL.
+
+Pre-implementation checks:
+
+- `cmake -S . -B build` and `cmake --build build -j2`: PASS.
+- `ctest --test-dir build --output-on-failure`: PASS (2 tests).
+- `tests/run-postgres.sh build/audit-log-service`: initial setup failed because `initdb` could not create a shared memory segment (`Operation not permitted`). A subsequent run with local shared-memory access ran 30 tests: 29 passed and the new scenario failed at the missing `snapshotId` assertion.
+- Named result: `test_global_snapshot_is_returned_and_pins_traversal (__main__.SnapshotResponseTraversalTests.test_global_snapshot_is_returned_and_pins_traversal) ... FAIL`.
+
+The initial failure demonstrated the missing response field rather than a fixture failure; its later assertions were not reached in that run.
+
+Post-implementation checks:
+
+- `cmake -S . -B build` and `cmake --build build -j2`: PASS (configuration run before implementation; build rerun afterward).
+- `ctest --test-dir build --output-on-failure`: PASS (2 tests).
+- `tests/run-postgres.sh build/audit-log-service`: PASS (33 tests), using local shared-memory access. The empty-journal case uses a separate temporary PostgreSQL cluster and the existing schema and guard migrations without seed data.
+- `test_global_snapshot_is_returned_and_pins_traversal (__main__.SnapshotResponseTraversalTests.test_global_snapshot_is_returned_and_pins_traversal) ... ok`.
+- `git diff --check`: PASS.
 
 | Requirement | Runtime evidence |
 | --- | --- |
-| Resolve global S and apply it to the first GET | UNKNOWN — not run; current code has no automatic resolution |
-| Return and reuse S, including zero | UNKNOWN — not run; current response has no snapshotId field |
-| Stable traversal after a completed GET followed by append | UNKNOWN — new acceptance scenario not run |
-| Empty journal, no matches and nonzero starting page | UNKNOWN — not run |
-| Preserve filters, validation, ordering and append-only guards | UNKNOWN — existing checks inspected, not run |
+| Resolve global S and apply it to the first GET | PASS — global boundary and first page checked over HTTP and PostgreSQL |
+| Return and reuse S, including zero | PASS — supplied and resolved boundaries, including zero, checked |
+| Stable traversal after a completed GET followed by append | PASS — combined scenario covers both original events exactly once |
+| Empty journal, no matches and nonzero starting page | PASS — isolated empty fixture and HTTP checks |
+| Preserve filters, validation, ordering and append-only guards | PASS — existing integration checks passed for their covered cases |
 
 ## Approved plan and expected files
 
@@ -74,7 +91,7 @@ Current evidence is source inspection only; no build, unit or PostgreSQL integra
 
 Expected changed files: this card, `tests/integration.py`, `include/audit/domain/event_page.hpp`, `src/persistence/query/postgres_read_repository.cpp`, `src/api/query/routes.cpp`, `tests/unit.cpp`, and `.specs/api/query-api.md`.
 
-Actual changed files so far: this card only. No application or test changes have been made.
+Actual changed files: this card, `tests/integration.py`, `tests/unit.cpp`, `include/audit/domain/event_page.hpp`, `src/persistence/query/postgres_read_repository.cpp`, `src/api/query/routes.cpp`, and `.specs/api/query-api.md`.
 
 ## When the agent must stop
 
@@ -82,4 +99,4 @@ Actual changed files so far: this card only. No application or test changes have
 - If later implementation is authorized, stop and clarify any conflict with the approved contract or any need to exceed its scope.
 - Do not weaken tests or append-only guards. If a prerequisite prevents a check, record the actual blocker and mark the affected evidence UNKNOWN; never claim a historical result as a current PASS.
 
-The owner approved the plan and its contract. Implementation authorization remains separate.
+The owner subsequently authorized implementation.

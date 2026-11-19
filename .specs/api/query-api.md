@@ -22,7 +22,8 @@
   "content": [],
   "page": 0,
   "size": 50,
-  "totalElements": 0
+  "totalElements": 0,
+  "snapshotId": 0
 }
 ```
 
@@ -30,9 +31,9 @@ Content items include `id`, `recordedAt`, `actor`, `action`, `resourceType`, `re
 
 ## Snapshot Boundary
 
-`snapshotId` is an optional input parameter. When present, the query restricts both content and `totalElements` to `id <= snapshotId` under the same filters. Repeat the same S, filters and size across pages to keep the traversal bounded while the journal grows.
+When `snapshotId` is omitted, the service resolves S as the global maximum event ID before filters, or 0 for an empty journal. When supplied, its signed 64-bit value is used unchanged, including zero. Both content and `totalElements` are restricted to `id <= S` under the same filters, and the response returns S as numeric `snapshotId`. A filter with no matches retains S with empty content and zero total.
 
-Without `snapshotId`, the query is unbounded and reflects the journal as of each request. The response does not report a snapshot boundary; the client supplies one itself.
+Repeat S, filters and size across pages to keep traversal bounded against events appended after the first request completes. Each request that omits S resolves a new boundary. This ID ceiling is not an MVCC snapshot and does not guarantee behavior for arbitrary overlapping transaction commits.
 
 ## Sort Order
 

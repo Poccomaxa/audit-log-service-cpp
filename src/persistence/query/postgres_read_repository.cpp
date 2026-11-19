@@ -10,6 +10,10 @@ namespace audit::persistence {
 domain::EventPage PostgresReadRepository::find(const domain::Search& search) {
   detail::Connection connection(conninfo_);
   detail::Transaction transaction(connection, true);
+  const auto snapshot = search.snapshot_id ? *search.snapshot_id : [&] {
+    const auto result = connection.exec("SELECT COALESCE(MAX(id), 0) FROM audit_events");
+    return static_cast<std::int64_t>(std::stoll(PQgetvalue(result.get(), 0, 0)));
+  }();
   std::string where = " WHERE TRUE";
   detail::Parameters parameters;
   const auto filter = [&](const std::string& column, const std::string& op, std::string value,
@@ -23,7 +27,7 @@ domain::EventPage PostgresReadRepository::find(const domain::Search& search) {
   if (search.action) filter("action", " = ", std::string(domain::to_string(*search.action)));
   if (search.outcome) filter("outcome", " = ", std::string(domain::to_string(*search.outcome)));
 
-  if (search.snapshot_id) filter("id", " <= ", std::to_string(*search.snapshot_id), "::bigint");
+  filter("id", " <= ", std::to_string(snapshot), "::bigint");
 
   auto page_parameters = parameters;
   page_parameters.emplace_back(std::to_string(search.size));
@@ -62,7 +66,7 @@ domain::EventPage PostgresReadRepository::find(const domain::Search& search) {
     total = std::stoll(PQgetvalue(count.get(), 0, 0));
   }
   transaction.commit();
-  return {std::move(content), search.page, search.size, total};
+  return {std::move(content), search.page, search.size, total, snapshot};
 }
 
 }  // namespace audit::persistence

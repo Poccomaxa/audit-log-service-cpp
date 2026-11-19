@@ -29,7 +29,7 @@ struct ReadFake final : ReadRepository {
     std::optional<Search> last_search;
     EventPage find(const Search& search) override {
         last_search = search;
-        return {{}, search.page, search.size, 0};
+        return {{}, search.page, search.size, 0, 42};
     }
 };
 
@@ -55,6 +55,7 @@ void query_preserves_baseline_filter_and_pagination_behavior() {
     audit::application::query::Query query{};
     const auto page = service.find(query);
     check(page.page == 0 && page.size == 50, "Pagination defaults");
+    check(page.snapshot_id == 42, "Propagate repository snapshot boundary");
     query.actor = "  alice  ";
     query.size = 999;
     query.from = parse_instant("2026-10-25T00:00:00Z");

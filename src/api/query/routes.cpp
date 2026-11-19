@@ -42,7 +42,7 @@ void register_routes(httplib::Server& server, application::query::QueryService& 
     Json content = Json::array();
     for (const auto& event : page.content) content.push_back(event_json(event));
     response.set_content(Json{{"content", content}, {"page", page.page}, {"size", page.size},
-                              {"totalElements", page.total_elements}}.dump(), "application/json");
+                              {"totalElements", page.total_elements}, {"snapshotId", page.snapshot_id}}.dump(), "application/json");
   });
 }
 }

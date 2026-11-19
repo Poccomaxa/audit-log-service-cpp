@@ -16,6 +16,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,13 +74,13 @@ class Service:
 
 
 @contextlib.contextmanager
-def database():
+def database(force_local=False):
     pg_config = os.environ.get("PG_CONFIG", shutil.which("pg_config"))
     if not pg_config:
         raise RuntimeError("PostgreSQL tools are required; put pg_config on PATH or set PG_CONFIG")
     bindir = Path(checked([pg_config, "--bindir"]))
     psql = str(bindir / "psql")
-    external_url = os.environ.get("AUDIT_LOG_TEST_DB_URL")
+    external_url = None if force_local else os.environ.get("AUDIT_LOG_TEST_DB_URL")
     if external_url:
         service = Service(external_url, psql)
         relations = service.sql(
@@ -110,13 +111,13 @@ def database():
 
 
 @contextlib.contextmanager
-def running_service(service, binary):
+def running_service(service, binary, migrations=ROOT / "db" / "migration"):
     port = free_port()
     service.base_url = f"http://127.0.0.1:{port}"
     environment = {
         **os.environ,
         "AUDIT_LOG_DB_URL": service.db_url,
-        "AUDIT_LOG_MIGRATIONS": str(ROOT / "db" / "migration"),
+        "AUDIT_LOG_MIGRATIONS": str(migrations),
         "AUDIT_LOG_HOST": "127.0.0.1",
         "AUDIT_LOG_PORT": str(port),
     }
@@ -394,6 +395,69 @@ class PaginationTest(ApiTest):
         return event["id"]
 
 
+class SnapshotResponseTraversalTests(PaginationTest):
+    def test_global_snapshot_is_returned_and_pins_traversal(self):
+        suffix = uuid.uuid4().hex
+        actor_a = f"snapshot-a-{suffix}@example.test"
+        actor_b = f"snapshot-b-{suffix}@example.test"
+        original = [self.append_event(actor_a), self.append_event(actor_a)]
+        boundary = self.append_event(actor_b)
+
+        first = self.query(actor=actor_a, page=0, size=1)
+        self.assertIn("snapshotId", first, "first page must return the effective snapshot boundary")
+        snapshot = first["snapshotId"]
+        self.assertIs(type(snapshot), int)
+        self.assertEqual(snapshot, boundary)
+        self.assertEqual(first["totalElements"], 2)
+
+        appended = self.append_event(actor_a)
+        self.assertGreater(appended, snapshot)
+        second = self.query(actor=actor_a, page=1, size=1, snapshotId=snapshot)
+        self.assertEqual(second["snapshotId"], snapshot)
+        self.assertEqual(second["totalElements"], 2)
+        traversed = self.ids(first) + self.ids(second)
+        self.assertEqual(len(traversed), 2)
+        self.assertEqual(len(set(traversed)), 2)
+        self.assertEqual(set(traversed), set(original))
+        self.assertNotIn(appended, traversed)
+
+
+    def test_supplied_snapshot_zero_and_no_matches(self):
+        actor = f"snapshot-extra-{uuid.uuid4().hex}@example.test"
+        event_id = self.append_event(actor)
+        for boundary in (0, event_id, event_id + 100):
+            with self.subTest(boundary=boundary):
+                page = self.query(actor=actor, snapshotId=boundary)
+                self.assertEqual(page["snapshotId"], boundary)
+                self.assertEqual(self.ids(page), [] if boundary == 0 else [event_id])
+                self.assertEqual(page["totalElements"], 0 if boundary == 0 else 1)
+        page = self.query(actor=f"missing-{uuid.uuid4().hex}@example.test")
+        self.assertEqual(page["snapshotId"], event_id)
+        self.assertEqual(page["content"], [])
+        self.assertEqual(page["totalElements"], 0)
+
+    def test_nonzero_start_page_uses_global_boundary(self):
+        actor = f"snapshot-page-{uuid.uuid4().hex}@example.test"
+        ids = [self.append_event(actor), self.append_event(actor)]
+        boundary = self.append_event(f"snapshot-other-{uuid.uuid4().hex}@example.test")
+        page = self.query(actor=actor, page=1, size=1)
+        self.assertEqual(page["snapshotId"], boundary)
+        self.assertEqual(page["totalElements"], 2)
+        self.assertEqual(self.ids(page), [ids[0]])
+
+    def test_empty_journal_returns_zero(self):
+        with tempfile.TemporaryDirectory(prefix="audit-log-migrations-") as directory:
+            migrations = Path(directory)
+            for name in ("V1__create_audit_events.sql", "V2__append_only_guard.sql"):
+                shutil.copy(ROOT / "db" / "migration" / name, migrations / name)
+            with database(force_local=True) as service, running_service(service, self.binary, migrations):
+                status, _, page = service.request()
+                self.assertEqual(status, 200, page)
+                self.assertEqual(page["snapshotId"], 0)
+                self.assertEqual(page["content"], [])
+                self.assertEqual(page["totalElements"], 0)
+
+
 class PaginationWindowShiftTests(PaginationTest):
     def test_control_traversal_without_concurrent_append_has_no_overlap(self):
         first = self.query(page=0, size=3)
@@ -469,8 +533,9 @@ def main():
         raise RuntimeError(f"Build the service first; executable not found: {binary}")
     with database() as service, running_service(service, binary):
         ApiTest.service = service
+        SnapshotResponseTraversalTests.binary = binary
         suite = unittest.TestSuite()
-        for case in (QueryTests, AppendTests, PaginationWindowShiftTests, DatabaseTimestampTests):
+        for case in (QueryTests, SnapshotResponseTraversalTests, AppendTests, PaginationWindowShiftTests, DatabaseTimestampTests):
             suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
 
